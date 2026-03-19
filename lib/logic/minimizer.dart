@@ -1,5 +1,373 @@
 
+import 'package:flutter/material.dart';
 import 'package:simplimap/models/implicant.dart';
+import 'package:simplimap/models/kmap_group.dart';
+
+class LogicMinimizer {
+  static const List<String> _variables = ['A', 'B', 'C', 'D'];
+
+  static List<KmapGroup> minimize(
+    List<int> targetTerms,
+    List<int> dontCares,
+    int numVars,
+    bool isSOP,
+  ) {
+    if (numVars < 3 || numVars > 4) {
+      return const <KmapGroup>[];
+    }
+
+    final maxTerm = 1 << numVars;
+    final targets = targetTerms.where((term) => term >= 0 && term < maxTerm).toSet().toList()..sort();
+    if (targets.isEmpty) {
+      return const <KmapGroup>[];
+    }
+
+    final dontCareSet = dontCares
+        .where((term) => term >= 0 && term < maxTerm)
+        .where((term) => !targets.contains(term))
+        .toSet();
+
+    final allInputTerms = <int>{...targets, ...dontCareSet}.toList()..sort();
+    final primeImplicants = _findPrimeImplicants(allInputTerms, targets.toSet(), numVars);
+    if (primeImplicants.isEmpty) {
+      return const <KmapGroup>[];
+    }
+
+    final chart = <int, Set<int>>{};
+    for (final target in targets) {
+      chart[target] = <int>{};
+      for (var i = 0; i < primeImplicants.length; i++) {
+        if (primeImplicants[i].coveredTargets.contains(target)) {
+          chart[target]!.add(i);
+        }
+      }
+    }
+
+    final selected = <int>{};
+    final essential = <int>{};
+    final remainingTargets = targets.toSet();
+
+    for (final target in targets) {
+      final covering = chart[target] ?? <int>{};
+      if (covering.length == 1) {
+        final piIndex = covering.first;
+        selected.add(piIndex);
+        essential.add(piIndex);
+      }
+    }
+
+    for (final piIndex in selected) {
+      remainingTargets.removeAll(primeImplicants[piIndex].coveredTargets);
+    }
+
+    if (remainingTargets.isNotEmpty) {
+      final clauses = <Set<int>>[];
+      for (final target in remainingTargets) {
+        final covering = (chart[target] ?? <int>{}).where((index) => !selected.contains(index)).toSet();
+        if (covering.isNotEmpty) {
+          clauses.add(covering);
+        }
+      }
+
+      if (clauses.isNotEmpty) {
+        var products = <Set<int>>[<int>{}];
+        for (final clause in clauses) {
+          final nextProducts = <Set<int>>[];
+          for (final product in products) {
+            for (final piIndex in clause) {
+              final merged = <int>{...product, piIndex};
+              nextProducts.add(merged);
+            }
+          }
+          products = _reduceProducts(nextProducts);
+        }
+
+        final best = _pickBestProduct(products, primeImplicants);
+        selected.addAll(best);
+      }
+    }
+
+    final sortedSelection = selected.toList()
+      ..sort((a, b) {
+        final termCompare = primeImplicants[b].coveredTargets.length.compareTo(primeImplicants[a].coveredTargets.length);
+        if (termCompare != 0) {
+          return termCompare;
+        }
+        return primeImplicants[a].pattern.compareTo(primeImplicants[b].pattern);
+      });
+
+    return sortedSelection.map((index) {
+      final implicant = primeImplicants[index];
+      final coveredTerms = implicant.coveredTargets.toList()..sort();
+      return KmapGroup(
+        minterms: coveredTerms,
+        simplifiedTerm: _patternToExpression(implicant.pattern, numVars, isSOP),
+        color: const Color(0x00000000),
+        isEssential: essential.contains(index),
+        eliminationLogic: _buildEliminationLogic(implicant.pattern, numVars),
+      );
+    }).toList(growable: false);
+  }
+
+  static List<_PrimeImplicant> _findPrimeImplicants(
+    List<int> allTerms,
+    Set<int> targetSet,
+    int numVars,
+  ) {
+    var current = allTerms
+        .map(
+          (term) => _QmNode(
+            pattern: term.toRadixString(2).padLeft(numVars, '0'),
+            coveredAllTerms: <int>{term},
+          ),
+        )
+        .toList(growable: false);
+
+    final primeMap = <String, Set<int>>{};
+
+    while (current.isNotEmpty) {
+      final groups = <int, List<int>>{};
+      for (var i = 0; i < current.length; i++) {
+        final ones = _countOnes(current[i].pattern);
+        groups.putIfAbsent(ones, () => <int>[]).add(i);
+      }
+
+      final used = List<bool>.filled(current.length, false);
+      final nextMap = <String, Set<int>>{};
+      final groupKeys = groups.keys.toList()..sort();
+
+      for (final key in groupKeys) {
+        final thisGroup = groups[key] ?? const <int>[];
+        final nextGroup = groups[key + 1] ?? const <int>[];
+        if (thisGroup.isEmpty || nextGroup.isEmpty) {
+          continue;
+        }
+
+        for (final leftIndex in thisGroup) {
+          for (final rightIndex in nextGroup) {
+            final combined = _combinePatterns(current[leftIndex].pattern, current[rightIndex].pattern);
+            if (combined == null) {
+              continue;
+            }
+            used[leftIndex] = true;
+            used[rightIndex] = true;
+            nextMap.putIfAbsent(combined, () => <int>{}).addAll(current[leftIndex].coveredAllTerms);
+            nextMap[combined]!.addAll(current[rightIndex].coveredAllTerms);
+          }
+        }
+      }
+
+      for (var i = 0; i < current.length; i++) {
+        if (!used[i]) {
+          primeMap.putIfAbsent(current[i].pattern, () => <int>{}).addAll(current[i].coveredAllTerms);
+        }
+      }
+
+      current = nextMap.entries
+          .map((entry) => _QmNode(pattern: entry.key, coveredAllTerms: entry.value))
+          .toList(growable: false);
+    }
+
+    final primes = <_PrimeImplicant>[];
+    for (final entry in primeMap.entries) {
+      final coveredTargets = entry.value.where(targetSet.contains).toSet();
+      if (coveredTargets.isEmpty) {
+        continue;
+      }
+      primes.add(
+        _PrimeImplicant(
+          pattern: entry.key,
+          coveredTargets: coveredTargets,
+          literalCount: _literalCount(entry.key),
+        ),
+      );
+    }
+
+    primes.sort((a, b) {
+      final c1 = b.coveredTargets.length.compareTo(a.coveredTargets.length);
+      if (c1 != 0) {
+        return c1;
+      }
+      final c2 = a.literalCount.compareTo(b.literalCount);
+      if (c2 != 0) {
+        return c2;
+      }
+      return a.pattern.compareTo(b.pattern);
+    });
+
+    return primes;
+  }
+
+  static int _countOnes(String pattern) {
+    var count = 0;
+    for (var i = 0; i < pattern.length; i++) {
+      if (pattern[i] == '1') {
+        count++;
+      }
+    }
+    return count;
+  }
+
+  static String? _combinePatterns(String a, String b) {
+    if (a.length != b.length) {
+      return null;
+    }
+
+    var diff = 0;
+    final buffer = StringBuffer();
+    for (var i = 0; i < a.length; i++) {
+      final left = a[i];
+      final right = b[i];
+      if (left == right) {
+        buffer.write(left);
+        continue;
+      }
+      if (left == '-' || right == '-') {
+        return null;
+      }
+      diff++;
+      if (diff > 1) {
+        return null;
+      }
+      buffer.write('-');
+    }
+
+    return diff == 1 ? buffer.toString() : null;
+  }
+
+  static List<Set<int>> _reduceProducts(List<Set<int>> products) {
+    final unique = <String, Set<int>>{};
+    for (final product in products) {
+      final normalized = product.toList()..sort();
+      unique[normalized.join(',')] = product;
+    }
+
+    final values = unique.values.toList(growable: false);
+    final keep = List<bool>.filled(values.length, true);
+
+    for (var i = 0; i < values.length; i++) {
+      if (!keep[i]) {
+        continue;
+      }
+      for (var j = 0; j < values.length; j++) {
+        if (i == j || !keep[j]) {
+          continue;
+        }
+        if (_isSubset(values[i], values[j])) {
+          keep[j] = false;
+        }
+      }
+    }
+
+    final reduced = <Set<int>>[];
+    for (var i = 0; i < values.length; i++) {
+      if (keep[i]) {
+        reduced.add(values[i]);
+      }
+    }
+    return reduced;
+  }
+
+  static bool _isSubset(Set<int> left, Set<int> right) {
+    if (left.length > right.length) {
+      return false;
+    }
+    for (final value in left) {
+      if (!right.contains(value)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  static Set<int> _pickBestProduct(List<Set<int>> products, List<_PrimeImplicant> implicants) {
+    if (products.isEmpty) {
+      return <int>{};
+    }
+
+    Set<int>? best;
+    var bestPiCount = 1 << 30;
+    var bestLiteralCount = 1 << 30;
+    String? bestSignature;
+
+    for (final product in products) {
+      final piCount = product.length;
+      final literalCount = product.fold<int>(0, (sum, index) => sum + implicants[index].literalCount);
+      final signatureList = product.toList()..sort();
+      final signature = signatureList.join(',');
+
+      final better = piCount < bestPiCount ||
+          (piCount == bestPiCount && literalCount < bestLiteralCount) ||
+          (piCount == bestPiCount && literalCount == bestLiteralCount &&
+              (bestSignature == null || signature.compareTo(bestSignature) < 0));
+
+      if (better) {
+        best = product;
+        bestPiCount = piCount;
+        bestLiteralCount = literalCount;
+        bestSignature = signature;
+      }
+    }
+
+    return best ?? <int>{};
+  }
+
+  static int _literalCount(String pattern) {
+    var count = 0;
+    for (var i = 0; i < pattern.length; i++) {
+      if (pattern[i] != '-') {
+        count++;
+      }
+    }
+    return count;
+  }
+
+  static String _patternToExpression(String pattern, int numVars, bool isSOP) {
+    final literals = <String>[];
+    for (var i = 0; i < numVars; i++) {
+      final bit = pattern[i];
+      if (bit == '-') {
+        continue;
+      }
+      final variable = _variables[i];
+      if (isSOP) {
+        literals.add(bit == '1' ? variable : "$variable'");
+      } else {
+        literals.add(bit == '0' ? variable : "$variable'");
+      }
+    }
+
+    if (isSOP) {
+      return literals.isEmpty ? '1' : literals.join();
+    }
+    return literals.isEmpty ? '(0)' : '(${literals.join('+')})';
+  }
+
+  static String _buildEliminationLogic(String pattern, int numVars) {
+    final eliminated = <String>[];
+    final fixed = <String>[];
+
+    for (var i = 0; i < numVars; i++) {
+      final variable = _variables[i];
+      final bit = pattern[i];
+      if (bit == '-') {
+        eliminated.add('Dash at index $i means variable $variable changed state and was eliminated.');
+      } else {
+        fixed.add('$variable=$bit');
+      }
+    }
+
+    if (eliminated.isEmpty) {
+      return 'No dash positions were introduced, so no variables were eliminated. Fixed states: ${fixed.join(', ')}.';
+    }
+
+    final base = eliminated.join(' ');
+    if (fixed.isEmpty) {
+      return base;
+    }
+    return '$base Fixed variable states: ${fixed.join(', ')}.';
+  }
+}
 
 class Minimizer {
   String minimize(List<int> mintermValues, int numVariables, [List<int> dontCares = const []]) {
@@ -7,362 +375,89 @@ class Minimizer {
   }
 
   String minimizeSOP(List<int> mintermValues, int numVariables, [List<int> dontCares = const []]) {
-    final maxTerms = 1 << numVariables;
-    final required = mintermValues.where((m) => m >= 0 && m < maxTerms).toSet()..toList().sort();
-    final optional = dontCares.where((m) => m >= 0 && m < maxTerms && !required.contains(m)).toSet();
-
-    if (required.isEmpty) return '0';
-    if (required.length == maxTerms) return '1';
-
-    final pis = _generatePrimeImplicants(required, optional, numVariables);
-    final selected = _selectWithPetrick(pis, required.toList());
-    return _cubesToSop(selected, numVariables);
+    final groups = LogicMinimizer.minimize(mintermValues, dontCares, numVariables, true);
+    if (groups.isEmpty) {
+      return '0';
+    }
+    return groups.map((group) => group.simplifiedTerm).join(' + ');
   }
 
   String minimizePOS(List<int> zeroValues, int numVariables, [List<int> dontCares = const []]) {
-    final maxTerms = 1 << numVariables;
-    final requiredZeros = zeroValues.where((m) => m >= 0 && m < maxTerms).toSet();
-    final optional = dontCares.where((m) => m >= 0 && m < maxTerms && !requiredZeros.contains(m)).toSet();
-
-    if (requiredZeros.isEmpty) return '1';
-    if (requiredZeros.length == maxTerms) return '0';
-
-    final pis = _generatePrimeImplicants(requiredZeros, optional, numVariables);
-    final selected = _selectWithPetrick(pis, requiredZeros.toList());
-    return _cubesToPos(selected, numVariables);
+    final groups = LogicMinimizer.minimize(zeroValues, dontCares, numVariables, false);
+    if (groups.isEmpty) {
+      return '1';
+    }
+    return groups.map((group) => group.simplifiedTerm).join();
   }
 
   List<Implicant> findPrimeImplicants(List<int> mintermValues, int numVariables, [List<int> dontCares = const []]) {
-    final maxTerms = 1 << numVariables;
-    final required = mintermValues.where((m) => m >= 0 && m < maxTerms).toSet();
-    final optional = dontCares.where((m) => m >= 0 && m < maxTerms && !required.contains(m)).toSet();
-    if (required.isEmpty) return [];
+    if (numVariables < 3 || numVariables > 4) {
+      return const <Implicant>[];
+    }
 
-    final pis = _generatePrimeImplicants(required, optional, numVariables);
-    return pis.map((cube) => _cubeToImplicant(cube, numVariables)).toList();
+    final maxTerm = 1 << numVariables;
+    final targets = mintermValues.where((term) => term >= 0 && term < maxTerm).toSet().toList()..sort();
+    if (targets.isEmpty) {
+      return const <Implicant>[];
+    }
+    final dcs = dontCares
+        .where((term) => term >= 0 && term < maxTerm)
+        .where((term) => !targets.contains(term))
+        .toSet();
+    final all = <int>{...targets, ...dcs}.toList()..sort();
+
+    final primes = LogicMinimizer._findPrimeImplicants(all, targets.toSet(), numVariables);
+    return primes
+        .map(
+          (prime) => Implicant(
+            prime.coveredTargets.toList()..sort(),
+            prime.pattern,
+          ),
+        )
+        .toList(growable: false);
   }
 
   String implicantToTerm(Implicant implicant, List<String> variables) {
-    String term = '';
-    for (int i = 0; i < implicant.binaryRepresentation.length; i++) {
-      if (implicant.binaryRepresentation[i] == '1') {
-        term += variables[i];
-      } else if (implicant.binaryRepresentation[i] == '0') {
-        term += "${variables[i]}'";
-      }
-    }
-    return term.isEmpty ? '1' : term;
-  }
-
-  String implicantToPosClause(Implicant implicant, List<String> variables) {
-    final literals = <String>[];
-    for (int i = 0; i < implicant.binaryRepresentation.length; i++) {
+    final buffer = StringBuffer();
+    for (var i = 0; i < implicant.binaryRepresentation.length && i < variables.length; i++) {
       final bit = implicant.binaryRepresentation[i];
       if (bit == '-') {
         continue;
       }
-      literals.add(bit == '1' ? "${variables[i]}'" : variables[i]);
-    }
-    if (literals.isEmpty) {
-      return '(0)';
-    }
-    return '(${literals.join(' + ')})';
-  }
-
-  List<_Cube> _generatePrimeImplicants(Set<int> requiredTerms, Set<int> optionalTerms, int numVariables) {
-    final allTerms = <int>{...requiredTerms, ...optionalTerms};
-    final fullMask = (1 << numVariables) - 1;
-
-    var current = allTerms
-        .map((m) => _Cube(
-              bits: m,
-              mask: fullMask,
-              coveredRequired: requiredTerms.contains(m) ? {m} : <int>{},
-            ))
-        .toList();
-
-    final primeMap = <String, _Cube>{};
-
-    while (true) {
-      final next = <String, _Cube>{};
-      final used = List<bool>.filled(current.length, false);
-
-      for (int i = 0; i < current.length; i++) {
-        for (int j = i + 1; j < current.length; j++) {
-          final combined = _combineCubes(current[i], current[j]);
-          if (combined == null) {
-            continue;
-          }
-
-          used[i] = true;
-          used[j] = true;
-
-          final key = combined.key;
-          final existing = next[key];
-          if (existing == null) {
-            next[key] = combined;
-          } else {
-            existing.coveredRequired.addAll(combined.coveredRequired);
-          }
-        }
-      }
-
-      for (int i = 0; i < current.length; i++) {
-        if (!used[i]) {
-          final key = current[i].key;
-          final existing = primeMap[key];
-          if (existing == null) {
-            primeMap[key] = current[i].copy();
-          } else {
-            existing.coveredRequired.addAll(current[i].coveredRequired);
-          }
-        }
-      }
-
-      if (next.isEmpty) {
-        break;
-      }
-      current = next.values.toList();
-    }
-
-    return primeMap.values.where((cube) => cube.coveredRequired.isNotEmpty).toList();
-  }
-
-  _Cube? _combineCubes(_Cube a, _Cube b) {
-    if (a.mask != b.mask) {
-      return null;
-    }
-
-    final diff = (a.bits ^ b.bits) & a.mask;
-    if (diff == 0 || (diff & (diff - 1)) != 0) {
-      return null;
-    }
-
-    final newMask = a.mask & ~diff;
-    final newBits = a.bits & newMask;
-
-    return _Cube(
-      bits: newBits,
-      mask: newMask,
-      coveredRequired: {...a.coveredRequired, ...b.coveredRequired},
-    );
-  }
-
-  List<_Cube> _selectWithPetrick(List<_Cube> primeImplicants, List<int> requiredTerms) {
-    final coveredBy = <int, List<int>>{};
-    for (int t in requiredTerms) {
-      coveredBy[t] = [];
-      for (int i = 0; i < primeImplicants.length; i++) {
-        if (primeImplicants[i].covers(t)) {
-          coveredBy[t]!.add(i);
-        }
-      }
-    }
-
-    final essentials = <int>{};
-    for (final entry in coveredBy.entries) {
-      if (entry.value.length == 1) {
-        essentials.add(entry.value.first);
-      }
-    }
-
-    final remaining = requiredTerms.where((t) {
-      for (final e in essentials) {
-        if (primeImplicants[e].covers(t)) {
-          return false;
-        }
-      }
-      return true;
-    }).toList();
-
-    if (remaining.isEmpty) {
-      return essentials.map((i) => primeImplicants[i]).toList();
-    }
-
-    var products = <Set<int>>[<int>{}];
-    for (final t in remaining) {
-      final clause = coveredBy[t]!.toSet();
-      final nextProducts = <Set<int>>[];
-
-      for (final product in products) {
-        for (final idx in clause) {
-          final merged = <int>{...product, idx};
-          nextProducts.add(merged);
-        }
-      }
-
-      products = _reduceDominatedProducts(nextProducts);
-    }
-
-    Set<int>? best;
-    int bestTerms = 1 << 30;
-    int bestLiterals = 1 << 30;
-    String? bestSignature;
-
-    for (final candidate in products) {
-      final withEssentials = <int>{...candidate, ...essentials};
-      final termCount = withEssentials.length;
-      final literalCount = withEssentials.fold<int>(
-        0,
-        (sum, idx) => sum + primeImplicants[idx].literalCount,
-      );
-      final signature = (withEssentials.toList()..sort()).join(',');
-
-      final better = termCount < bestTerms ||
-          (termCount == bestTerms && literalCount < bestLiterals) ||
-          (termCount == bestTerms && literalCount == bestLiterals &&
-              (bestSignature == null || signature.compareTo(bestSignature) < 0));
-
-      if (better) {
-        best = withEssentials;
-        bestTerms = termCount;
-        bestLiterals = literalCount;
-        bestSignature = signature;
-      }
-    }
-
-    final selected = (best ?? essentials).toList()..sort();
-    return selected.map((i) => primeImplicants[i]).toList();
-  }
-
-  List<Set<int>> _reduceDominatedProducts(List<Set<int>> products) {
-    final unique = <String, Set<int>>{};
-    for (final p in products) {
-      final key = (p.toList()..sort()).join(',');
-      unique[key] = p;
-    }
-
-    final list = unique.values.toList();
-    final keep = List<bool>.filled(list.length, true);
-
-    for (int i = 0; i < list.length; i++) {
-      if (!keep[i]) continue;
-      for (int j = 0; j < list.length; j++) {
-        if (i == j || !keep[j]) continue;
-
-        if (_isSubset(list[i], list[j])) {
-          keep[j] = false;
-        }
-      }
-    }
-
-    final reduced = <Set<int>>[];
-    for (int i = 0; i < list.length; i++) {
-      if (keep[i]) {
-        reduced.add(list[i]);
-      }
-    }
-    return reduced;
-  }
-
-  bool _isSubset(Set<int> a, Set<int> b) {
-    if (a.length > b.length) return false;
-    for (final v in a) {
-      if (!b.contains(v)) {
-        return false;
-      }
-    }
-    return true;
-  }
-
-  String _cubesToSop(List<_Cube> cubes, int numVariables) {
-    if (cubes.isEmpty) {
-      return '0';
-    }
-    final variables = ['A', 'B', 'C', 'D'].sublist(0, numVariables);
-    return cubes
-        .map((c) => _cubeToSopTerm(c, variables))
-        .where((t) => t.isNotEmpty)
-        .join(' + ');
-  }
-
-  String _cubeToSopTerm(_Cube cube, List<String> variables) {
-    final buffer = StringBuffer();
-    for (int i = 0; i < variables.length; i++) {
-      final bit = 1 << (variables.length - 1 - i);
-      if ((cube.mask & bit) == 0) {
-        continue;
-      }
-      if ((cube.bits & bit) != 0) {
-        buffer.write(variables[i]);
-      } else {
-        buffer.write("${variables[i]}'");
-      }
+      buffer.write(bit == '1' ? variables[i] : "${variables[i]}'");
     }
     final term = buffer.toString();
     return term.isEmpty ? '1' : term;
   }
 
-  String _cubesToPos(List<_Cube> cubes, int numVariables) {
-    if (cubes.isEmpty) {
-      return '1';
-    }
-    final variables = ['A', 'B', 'C', 'D'].sublist(0, numVariables);
-    return cubes.map((c) => _cubeToPosClause(c, variables)).join('');
-  }
-
-  String _cubeToPosClause(_Cube cube, List<String> variables) {
+  String implicantToPosClause(Implicant implicant, List<String> variables) {
     final literals = <String>[];
-    for (int i = 0; i < variables.length; i++) {
-      final bit = 1 << (variables.length - 1 - i);
-      if ((cube.mask & bit) == 0) {
+    for (var i = 0; i < implicant.binaryRepresentation.length && i < variables.length; i++) {
+      final bit = implicant.binaryRepresentation[i];
+      if (bit == '-') {
         continue;
       }
-      literals.add((cube.bits & bit) != 0 ? "${variables[i]}'" : variables[i]);
+      literals.add(bit == '0' ? variables[i] : "${variables[i]}'");
     }
-    if (literals.isEmpty) {
-      return '(0)';
-    }
-    return '(${literals.join(' + ')})';
-  }
-
-  Implicant _cubeToImplicant(_Cube cube, int numVariables) {
-    final binary = StringBuffer();
-    for (int i = numVariables - 1; i >= 0; i--) {
-      final bit = 1 << i;
-      if ((cube.mask & bit) == 0) {
-        binary.write('-');
-      } else if ((cube.bits & bit) != 0) {
-        binary.write('1');
-      } else {
-        binary.write('0');
-      }
-    }
-    final minterms = cube.coveredRequired.toList()..sort();
-    return Implicant(minterms, binary.toString());
+    return literals.isEmpty ? '(0)' : '(${literals.join(' + ')})';
   }
 }
 
-class _Cube {
-  _Cube({
-    required this.bits,
-    required this.mask,
-    required Set<int> coveredRequired,
-  }) : coveredRequired = Set<int>.from(coveredRequired);
+class _QmNode {
+  const _QmNode({required this.pattern, required this.coveredAllTerms});
 
-  final int bits;
-  final int mask;
-  final Set<int> coveredRequired;
+  final String pattern;
+  final Set<int> coveredAllTerms;
+}
 
-  String get key => '$bits/$mask';
+class _PrimeImplicant {
+  const _PrimeImplicant({
+    required this.pattern,
+    required this.coveredTargets,
+    required this.literalCount,
+  });
 
-  int get literalCount => _popCount(mask);
-
-  bool covers(int term) {
-    return (term & mask) == (bits & mask);
-  }
-
-  _Cube copy() {
-    return _Cube(bits: bits, mask: mask, coveredRequired: coveredRequired);
-  }
-
-  int _popCount(int n) {
-    var v = n;
-    var count = 0;
-    while (v != 0) {
-      v &= (v - 1);
-      count++;
-    }
-    return count;
-  }
+  final String pattern;
+  final Set<int> coveredTargets;
+  final int literalCount;
 }

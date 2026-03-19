@@ -9,8 +9,11 @@ class MinimizationResult extends StatelessWidget {
   Widget build(BuildContext context) {
     final provider = context.watch<KMapProvider>();
     final isDark = Theme.of(context).brightness == Brightness.dark;
+    final titleColor = isDark ? const Color(0xFFE8FBF5) : const Color(0xFF153D38);
 
     final textTheme = Theme.of(context).textTheme;
+    final isShowingSOP = provider.showingSOP;
+
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(18),
@@ -32,13 +35,40 @@ class MinimizationResult extends StatelessWidget {
                   ),
                 ),
                 const SizedBox(width: 10),
-                Text('Minimized Expressions', style: textTheme.titleMedium),
+                Text(
+                  'Minimized Expressions',
+                  style: textTheme.titleMedium?.copyWith(color: titleColor),
+                ),
               ],
             ),
             const SizedBox(height: 14),
-            _buildResultRow(context, 'SOP', provider.minimizedSOP),
-            const SizedBox(height: 10),
-            _buildResultRow(context, 'POS', provider.minimizedPOS),
+            // SOP/POS Toggle
+            Align(
+              alignment: Alignment.centerRight,
+              child: SegmentedButton<bool>(
+                segments: const [
+                  ButtonSegment(
+                    value: true,
+                    icon: Icon(Icons.add_rounded, size: 16),
+                    label: Text('SOP'),
+                  ),
+                  ButtonSegment(
+                    value: false,
+                    icon: Icon(Icons.close_rounded, size: 16),
+                    label: Text('POS'),
+                  ),
+                ],
+                selected: {isShowingSOP},
+                onSelectionChanged: (selection) =>
+                    provider.setShowingSOP(selection.first),
+              ),
+            ),
+            const SizedBox(height: 12),
+            // Display the selected expression
+            if (isShowingSOP)
+              _buildResultRow(context, 'SOP', provider.minimizedSOP)
+            else
+              _buildResultRow(context, 'POS', provider.minimizedPOS),
           ],
         ),
       ),

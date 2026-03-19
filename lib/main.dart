@@ -22,11 +22,11 @@ class SimpliMapApp extends StatefulWidget {
 }
 
 class _SimpliMapAppState extends State<SimpliMapApp> {
-  ThemeMode _themeMode = ThemeMode.light;
+  ThemeMode _themeMode = ThemeMode.system;
 
-  void _toggleThemeMode() {
+  void _setThemeMode(ThemeMode mode) {
     setState(() {
-      _themeMode = _themeMode == ThemeMode.dark ? ThemeMode.light : ThemeMode.dark;
+      _themeMode = mode;
     });
   }
 
@@ -175,8 +175,8 @@ class _SimpliMapAppState extends State<SimpliMapApp> {
       darkTheme: darkTheme,
       themeMode: _themeMode,
       home: SolverScreen(
-        isDarkMode: _themeMode == ThemeMode.dark,
-        onToggleTheme: _toggleThemeMode,
+        themeMode: _themeMode,
+        onThemeModeChanged: _setThemeMode,
       ),
     );
   }

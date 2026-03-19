@@ -206,7 +206,7 @@ class SimpliMapApp extends StatelessWidget {
     return Consumer<ThemeProvider>(
       builder: (context, themeProvider, child) {
         return MaterialApp(
-          title: 'Flutter Material AI App',
+          title: 'SimpliMap',
           theme: lightTheme,
           darkTheme: darkTheme,
           themeMode: themeProvider.themeMode,

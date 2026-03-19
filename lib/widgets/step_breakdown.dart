@@ -11,8 +11,11 @@ class StepBreakdown extends StatelessWidget {
     final provider = context.watch<KMapProvider>();
     final primeImplicants = provider.primeImplicants;
     final isDark = Theme.of(context).brightness == Brightness.dark;
+    final titleColor = isDark ? const Color(0xFFE8FBF5) : const Color(0xFF153D38);
 
     final textTheme = Theme.of(context).textTheme;
+    final expressionType = provider.showingSOP ? 'SOP' : 'POS';
+    
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(18),
@@ -34,7 +37,10 @@ class StepBreakdown extends StatelessWidget {
                   ),
                 ),
                 const SizedBox(width: 10),
-                Text('Prime Implicants', style: textTheme.titleMedium),
+                Text(
+                  'Prime Implicants ($expressionType)',
+                  style: textTheme.titleMedium?.copyWith(color: titleColor),
+                ),
               ],
             ),
             const SizedBox(height: 12),
@@ -55,7 +61,9 @@ class StepBreakdown extends StatelessWidget {
 
   Widget _buildPIList(List<Implicant> primeImplicants, int numVariables, BuildContext context) {
     final variables = ['A', 'B', 'C', 'D'].sublist(0, numVariables);
-    final minimizer = context.read<KMapProvider>().minimizer;
+    final provider = context.read<KMapProvider>();
+    final minimizer = provider.minimizer;
+    final isShowingSOP = provider.showingSOP;
     final isDark = Theme.of(context).brightness == Brightness.dark;
 
     return Wrap(
@@ -64,7 +72,9 @@ class StepBreakdown extends StatelessWidget {
       children: primeImplicants.map((pi) {
         return Chip(
           label: Text(
-            minimizer.implicantToTerm(pi, variables),
+            isShowingSOP
+                ? minimizer.implicantToTerm(pi, variables)
+                : minimizer.implicantToPosClause(pi, variables),
             style: TextStyle(
               fontFamily: 'monospace',
               fontWeight: FontWeight.bold,

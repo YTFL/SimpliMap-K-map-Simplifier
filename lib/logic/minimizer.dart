@@ -1,167 +1,368 @@
 
-import 'dart:collection';
-import 'dart:math';
 import 'package:simplimap/models/implicant.dart';
 
 class Minimizer {
-
-  String minimize(List<int> mintermValues, int numVariables) {
-    if (mintermValues.isEmpty) return '0';
-    if (mintermValues.length == pow(2, numVariables)) return '1';
-
-    final primeImplicants = findPrimeImplicants(mintermValues, numVariables);
-    final chart = _buildPrimeImplicantChart(primeImplicants, mintermValues);
-    
-    final essentialPIs = _selectEssentialPrimeImplicants(chart);
-    
-    final solutionPIs = <Implicant>{...essentialPIs};
-    var uncoveredMinterms = SplayTreeSet<int>.from(mintermValues);
-
-    for (final pi in essentialPIs) {
-      for (final m in pi.minterms) {
-        uncoveredMinterms.remove(m);
-      }
-    }
-
-    // Use a greedy approach to cover remaining minterms (Petrick's method is more exact but complex)
-    var remainingPIs = primeImplicants.where((pi) => !essentialPIs.contains(pi)).toList();
-
-    while (uncoveredMinterms.isNotEmpty) {
-        if (remainingPIs.isEmpty) break; // Should not happen in normal cases
-
-        // Find the PI that covers the most uncovered minterms
-        remainingPIs.sort((a, b) {
-            final aCovers = a.minterms.where((m) => uncoveredMinterms.contains(m)).length;
-            final bCovers = b.minterms.where((m) => uncoveredMinterms.contains(m)).length;
-            return bCovers.compareTo(aCovers);
-        });
-
-        final bestPI = remainingPIs.first;
-        solutionPIs.add(bestPI);
-        remainingPIs.remove(bestPI);
-
-        for (final m in bestPI.minterms) {
-            uncoveredMinterms.remove(m);
-        }
-    }
-
-    return _implicantsToSOP(solutionPIs.toList(), numVariables);
+  String minimize(List<int> mintermValues, int numVariables, [List<int> dontCares = const []]) {
+    return minimizeSOP(mintermValues, numVariables, dontCares);
   }
 
-  List<Implicant> findPrimeImplicants(List<int> mintermValues, int numVariables) {
-    if (mintermValues.isEmpty) return [];
+  String minimizeSOP(List<int> mintermValues, int numVariables, [List<int> dontCares = const []]) {
+    final maxTerms = 1 << numVariables;
+    final required = mintermValues.where((m) => m >= 0 && m < maxTerms).toSet()..toList().sort();
+    final optional = dontCares.where((m) => m >= 0 && m < maxTerms && !required.contains(m)).toSet();
 
-    var implicants = mintermValues
-        .map((m) => Implicant([m], _toBinary(m, numVariables)))
+    if (required.isEmpty) return '0';
+    if (required.length == maxTerms) return '1';
+
+    final pis = _generatePrimeImplicants(required, optional, numVariables);
+    final selected = _selectWithPetrick(pis, required.toList());
+    return _cubesToSop(selected, numVariables);
+  }
+
+  String minimizePOS(List<int> zeroValues, int numVariables, [List<int> dontCares = const []]) {
+    final maxTerms = 1 << numVariables;
+    final requiredZeros = zeroValues.where((m) => m >= 0 && m < maxTerms).toSet();
+    final optional = dontCares.where((m) => m >= 0 && m < maxTerms && !requiredZeros.contains(m)).toSet();
+
+    if (requiredZeros.isEmpty) return '1';
+    if (requiredZeros.length == maxTerms) return '0';
+
+    final pis = _generatePrimeImplicants(requiredZeros, optional, numVariables);
+    final selected = _selectWithPetrick(pis, requiredZeros.toList());
+    return _cubesToPos(selected, numVariables);
+  }
+
+  List<Implicant> findPrimeImplicants(List<int> mintermValues, int numVariables, [List<int> dontCares = const []]) {
+    final maxTerms = 1 << numVariables;
+    final required = mintermValues.where((m) => m >= 0 && m < maxTerms).toSet();
+    final optional = dontCares.where((m) => m >= 0 && m < maxTerms && !required.contains(m)).toSet();
+    if (required.isEmpty) return [];
+
+    final pis = _generatePrimeImplicants(required, optional, numVariables);
+    return pis.map((cube) => _cubeToImplicant(cube, numVariables)).toList();
+  }
+
+  String implicantToTerm(Implicant implicant, List<String> variables) {
+    String term = '';
+    for (int i = 0; i < implicant.binaryRepresentation.length; i++) {
+      if (implicant.binaryRepresentation[i] == '1') {
+        term += variables[i];
+      } else if (implicant.binaryRepresentation[i] == '0') {
+        term += "${variables[i]}'";
+      }
+    }
+    return term.isEmpty ? '1' : term;
+  }
+
+  String implicantToPosClause(Implicant implicant, List<String> variables) {
+    final literals = <String>[];
+    for (int i = 0; i < implicant.binaryRepresentation.length; i++) {
+      final bit = implicant.binaryRepresentation[i];
+      if (bit == '-') {
+        continue;
+      }
+      literals.add(bit == '1' ? "${variables[i]}'" : variables[i]);
+    }
+    if (literals.isEmpty) {
+      return '(0)';
+    }
+    return '(${literals.join(' + ')})';
+  }
+
+  List<_Cube> _generatePrimeImplicants(Set<int> requiredTerms, Set<int> optionalTerms, int numVariables) {
+    final allTerms = <int>{...requiredTerms, ...optionalTerms};
+    final fullMask = (1 << numVariables) - 1;
+
+    var current = allTerms
+        .map((m) => _Cube(
+              bits: m,
+              mask: fullMask,
+              coveredRequired: requiredTerms.contains(m) ? {m} : <int>{},
+            ))
         .toList();
-    
-    List<Implicant> primeImplicants = [];
+
+    final primeMap = <String, _Cube>{};
 
     while (true) {
-        var nextImplicants = <String, Implicant>{}; // Use a map to handle duplicates
+      final next = <String, _Cube>{};
+      final used = List<bool>.filled(current.length, false);
 
-        implicants.sort((a, b) => _countOnes(a.binaryRepresentation).compareTo(_countOnes(b.binaryRepresentation)));
-
-        for (int i = 0; i < implicants.length; i++) {
-            for (int j = i + 1; j < implicants.length; j++) {
-                if (_countOnes(implicants[j].binaryRepresentation) - _countOnes(implicants[i].binaryRepresentation) > 1) {
-                    break;
-                }
-                if (_canCombine(implicants[i], implicants[j])) {
-                    final combined = _combine(implicants[i], implicants[j]);
-                    nextImplicants[combined.binaryRepresentation] = combined;
-                    implicants[i].isPrime = false;
-                    implicants[j].isPrime = false;
-                }
-            }
-        }
-
-        for (final imp in implicants) {
-            if (imp.isPrime) {
-                primeImplicants.add(imp);
-            }
-        }
-
-        if (nextImplicants.isEmpty) break;
-        
-        implicants = nextImplicants.values.toList();
-    }
-
-    // Remove duplicate PIs that might have been added
-    final uniquePIMap = {for (var pi in primeImplicants) pi.binaryRepresentation: pi};
-
-    return uniquePIMap.values.toList();
-  }
-
-  Map<int, List<Implicant>> _buildPrimeImplicantChart(List<Implicant> primeImplicants, List<int> minterms) {
-    final chart = <int, List<Implicant>>{};
-    for (final minterm in minterms) {
-      chart[minterm] = [];
-      for (final pi in primeImplicants) {
-        if (pi.covers(minterm)) {
-          chart[minterm]!.add(pi);
-        }
-      }
-    }
-    return chart;
-  }
-
-  List<Implicant> _selectEssentialPrimeImplicants(Map<int, List<Implicant>> chart) {
-    final essentialPIs = <Implicant>{};
-    chart.forEach((minterm, implicants) {
-      if (implicants.length == 1) {
-        essentialPIs.add(implicants.first);
-      }
-    });
-    return essentialPIs.toList();
-  }
-
-    String _implicantsToSOP(List<Implicant> implicants, int numVariables) {
-      if (implicants.isEmpty) return "0";
-      final variables = ['A', 'B', 'C', 'D'].sublist(0, numVariables);
-      return implicants.map((imp) => implicantToTerm(imp, variables)).join(' + ');
-  }
-
-    String implicantToTerm(Implicant implicant, List<String> variables) {
-      String term = '';
-      for (int i = 0; i < implicant.binaryRepresentation.length; i++) {
-          if (implicant.binaryRepresentation[i] == '1') {
-              term += variables[i];
-          } else if (implicant.binaryRepresentation[i] == '0') {
-              term += "${variables[i]}'";
+      for (int i = 0; i < current.length; i++) {
+        for (int j = i + 1; j < current.length; j++) {
+          final combined = _combineCubes(current[i], current[j]);
+          if (combined == null) {
+            continue;
           }
+
+          used[i] = true;
+          used[j] = true;
+
+          final key = combined.key;
+          final existing = next[key];
+          if (existing == null) {
+            next[key] = combined;
+          } else {
+            existing.coveredRequired.addAll(combined.coveredRequired);
+          }
+        }
       }
-      return term.isEmpty ? "1" : term;
+
+      for (int i = 0; i < current.length; i++) {
+        if (!used[i]) {
+          final key = current[i].key;
+          final existing = primeMap[key];
+          if (existing == null) {
+            primeMap[key] = current[i].copy();
+          } else {
+            existing.coveredRequired.addAll(current[i].coveredRequired);
+          }
+        }
+      }
+
+      if (next.isEmpty) {
+        break;
+      }
+      current = next.values.toList();
+    }
+
+    return primeMap.values.where((cube) => cube.coveredRequired.isNotEmpty).toList();
   }
 
-  String _toBinary(int n, int bits) {
-    return n.toRadixString(2).padLeft(bits, '0');
+  _Cube? _combineCubes(_Cube a, _Cube b) {
+    if (a.mask != b.mask) {
+      return null;
+    }
+
+    final diff = (a.bits ^ b.bits) & a.mask;
+    if (diff == 0 || (diff & (diff - 1)) != 0) {
+      return null;
+    }
+
+    final newMask = a.mask & ~diff;
+    final newBits = a.bits & newMask;
+
+    return _Cube(
+      bits: newBits,
+      mask: newMask,
+      coveredRequired: {...a.coveredRequired, ...b.coveredRequired},
+    );
   }
 
-  int _countOnes(String binaryString) {
-    return binaryString.split('').where((char) => char == '1').length;
-  }
-
-  bool _canCombine(Implicant imp1, Implicant imp2) {
-    int diff = 0;
-    for (int i = 0; i < imp1.binaryRepresentation.length; i++) {
-      if (imp1.binaryRepresentation[i] != imp2.binaryRepresentation[i]) {
-        diff++;
+  List<_Cube> _selectWithPetrick(List<_Cube> primeImplicants, List<int> requiredTerms) {
+    final coveredBy = <int, List<int>>{};
+    for (int t in requiredTerms) {
+      coveredBy[t] = [];
+      for (int i = 0; i < primeImplicants.length; i++) {
+        if (primeImplicants[i].covers(t)) {
+          coveredBy[t]!.add(i);
+        }
       }
     }
-    return diff == 1;
+
+    final essentials = <int>{};
+    for (final entry in coveredBy.entries) {
+      if (entry.value.length == 1) {
+        essentials.add(entry.value.first);
+      }
+    }
+
+    final remaining = requiredTerms.where((t) {
+      for (final e in essentials) {
+        if (primeImplicants[e].covers(t)) {
+          return false;
+        }
+      }
+      return true;
+    }).toList();
+
+    if (remaining.isEmpty) {
+      return essentials.map((i) => primeImplicants[i]).toList();
+    }
+
+    var products = <Set<int>>[<int>{}];
+    for (final t in remaining) {
+      final clause = coveredBy[t]!.toSet();
+      final nextProducts = <Set<int>>[];
+
+      for (final product in products) {
+        for (final idx in clause) {
+          final merged = <int>{...product, idx};
+          nextProducts.add(merged);
+        }
+      }
+
+      products = _reduceDominatedProducts(nextProducts);
+    }
+
+    Set<int>? best;
+    int bestTerms = 1 << 30;
+    int bestLiterals = 1 << 30;
+    String? bestSignature;
+
+    for (final candidate in products) {
+      final withEssentials = <int>{...candidate, ...essentials};
+      final termCount = withEssentials.length;
+      final literalCount = withEssentials.fold<int>(
+        0,
+        (sum, idx) => sum + primeImplicants[idx].literalCount,
+      );
+      final signature = (withEssentials.toList()..sort()).join(',');
+
+      final better = termCount < bestTerms ||
+          (termCount == bestTerms && literalCount < bestLiterals) ||
+          (termCount == bestTerms && literalCount == bestLiterals &&
+              (bestSignature == null || signature.compareTo(bestSignature) < 0));
+
+      if (better) {
+        best = withEssentials;
+        bestTerms = termCount;
+        bestLiterals = literalCount;
+        bestSignature = signature;
+      }
+    }
+
+    final selected = (best ?? essentials).toList()..sort();
+    return selected.map((i) => primeImplicants[i]).toList();
   }
 
-  Implicant _combine(Implicant imp1, Implicant imp2) {
-    String combinedBinary = '';
-    for (int i = 0; i < imp1.binaryRepresentation.length; i++) {
-      if (imp1.binaryRepresentation[i] == imp2.binaryRepresentation[i]) {
-        combinedBinary += imp1.binaryRepresentation[i];
+  List<Set<int>> _reduceDominatedProducts(List<Set<int>> products) {
+    final unique = <String, Set<int>>{};
+    for (final p in products) {
+      final key = (p.toList()..sort()).join(',');
+      unique[key] = p;
+    }
+
+    final list = unique.values.toList();
+    final keep = List<bool>.filled(list.length, true);
+
+    for (int i = 0; i < list.length; i++) {
+      if (!keep[i]) continue;
+      for (int j = 0; j < list.length; j++) {
+        if (i == j || !keep[j]) continue;
+
+        if (_isSubset(list[i], list[j])) {
+          keep[j] = false;
+        }
+      }
+    }
+
+    final reduced = <Set<int>>[];
+    for (int i = 0; i < list.length; i++) {
+      if (keep[i]) {
+        reduced.add(list[i]);
+      }
+    }
+    return reduced;
+  }
+
+  bool _isSubset(Set<int> a, Set<int> b) {
+    if (a.length > b.length) return false;
+    for (final v in a) {
+      if (!b.contains(v)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  String _cubesToSop(List<_Cube> cubes, int numVariables) {
+    if (cubes.isEmpty) {
+      return '0';
+    }
+    final variables = ['A', 'B', 'C', 'D'].sublist(0, numVariables);
+    return cubes
+        .map((c) => _cubeToSopTerm(c, variables))
+        .where((t) => t.isNotEmpty)
+        .join(' + ');
+  }
+
+  String _cubeToSopTerm(_Cube cube, List<String> variables) {
+    final buffer = StringBuffer();
+    for (int i = 0; i < variables.length; i++) {
+      final bit = 1 << (variables.length - 1 - i);
+      if ((cube.mask & bit) == 0) {
+        continue;
+      }
+      if ((cube.bits & bit) != 0) {
+        buffer.write(variables[i]);
       } else {
-        combinedBinary += '-';
+        buffer.write("${variables[i]}'");
       }
     }
-    var combinedMinterms = SplayTreeSet<int>.from(imp1.minterms)..addAll(imp2.minterms);
-    return Implicant(combinedMinterms.toList(), combinedBinary);
+    final term = buffer.toString();
+    return term.isEmpty ? '1' : term;
+  }
+
+  String _cubesToPos(List<_Cube> cubes, int numVariables) {
+    if (cubes.isEmpty) {
+      return '1';
+    }
+    final variables = ['A', 'B', 'C', 'D'].sublist(0, numVariables);
+    return cubes.map((c) => _cubeToPosClause(c, variables)).join('');
+  }
+
+  String _cubeToPosClause(_Cube cube, List<String> variables) {
+    final literals = <String>[];
+    for (int i = 0; i < variables.length; i++) {
+      final bit = 1 << (variables.length - 1 - i);
+      if ((cube.mask & bit) == 0) {
+        continue;
+      }
+      literals.add((cube.bits & bit) != 0 ? "${variables[i]}'" : variables[i]);
+    }
+    if (literals.isEmpty) {
+      return '(0)';
+    }
+    return '(${literals.join(' + ')})';
+  }
+
+  Implicant _cubeToImplicant(_Cube cube, int numVariables) {
+    final binary = StringBuffer();
+    for (int i = numVariables - 1; i >= 0; i--) {
+      final bit = 1 << i;
+      if ((cube.mask & bit) == 0) {
+        binary.write('-');
+      } else if ((cube.bits & bit) != 0) {
+        binary.write('1');
+      } else {
+        binary.write('0');
+      }
+    }
+    final minterms = cube.coveredRequired.toList()..sort();
+    return Implicant(minterms, binary.toString());
+  }
+}
+
+class _Cube {
+  _Cube({
+    required this.bits,
+    required this.mask,
+    required Set<int> coveredRequired,
+  }) : coveredRequired = Set<int>.from(coveredRequired);
+
+  final int bits;
+  final int mask;
+  final Set<int> coveredRequired;
+
+  String get key => '$bits/$mask';
+
+  int get literalCount => _popCount(mask);
+
+  bool covers(int term) {
+    return (term & mask) == (bits & mask);
+  }
+
+  _Cube copy() {
+    return _Cube(bits: bits, mask: mask, coveredRequired: coveredRequired);
+  }
+
+  int _popCount(int n) {
+    var v = n;
+    var count = 0;
+    while (v != 0) {
+      v &= (v - 1);
+      count++;
+    }
+    return count;
   }
 }

@@ -156,14 +156,18 @@ class KMapGrid extends StatelessWidget {
     Color mintermColor,
   ) {
     final int minterm = _getMintermIndex(row, col, is3Var);
-
-    final bool isSelected = minterm < provider.gridState.length && provider.gridState[minterm] == 1;
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    
+    final cellValue = minterm < provider.gridState.length ? provider.gridState[minterm] : 0;
+    final isSelected = cellValue == 1;
+    final isDontCare = cellValue == 2;
+    
+    final dontCareColor = isDark ? const Color(0xFFFFA726) : const Color(0xFFFF9500);
 
     return GestureDetector(
       onTap: () {
         if (minterm < provider.gridState.length) {
-          final currentVal = provider.gridState[minterm];
-          provider.setGridState(minterm, 1 - currentVal);
+          provider.cycleCellState(minterm);
         }
       },
       child: Container(
@@ -172,7 +176,9 @@ class KMapGrid extends StatelessWidget {
         decoration: BoxDecoration(
           borderRadius: BorderRadius.circular(10),
           border: Border.all(color: borderColor.withValues(alpha: 0.5)),
-          color: isSelected ? cellOnColor.withValues(alpha: 0.92) : cellOffColor,
+          color: isDontCare 
+              ? dontCareColor.withValues(alpha: 0.85)
+              : (isSelected ? cellOnColor.withValues(alpha: 0.92) : cellOffColor),
         ),
         child: Stack(
           children: [
@@ -191,10 +197,12 @@ class KMapGrid extends StatelessWidget {
             ),
             Center(
               child: Text(
-                isSelected ? '1' : '0',
+                isDontCare ? 'D' : (isSelected ? '1' : '0'),
                 style: Theme.of(context).textTheme.titleMedium?.copyWith(
                   fontWeight: FontWeight.bold,
-                  color: isSelected ? valueOnColor : valueOffColor,
+                  color: isDontCare 
+                      ? Colors.white
+                      : (isSelected ? valueOnColor : valueOffColor),
                 ),
               ),
             ),

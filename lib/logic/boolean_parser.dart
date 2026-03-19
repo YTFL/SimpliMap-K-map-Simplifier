@@ -7,6 +7,12 @@ class BooleanParser {
       return [];
     }
 
+    // Check if expression uses minterm notation (m0, m1, m5, etc.)
+    if (_isMintermNotation(expression)) {
+      return _parseMintermNotation(expression, numVariables);
+    }
+
+    // Otherwise, parse as traditional Boolean expression (ABCD)
     final variables = numVariables == 3 ? ['A', 'B', 'C'] : ['A', 'B', 'C', 'D'];
     final minterms = <int>{};
 
@@ -18,6 +24,32 @@ class BooleanParser {
 
       final termMinterms = _getMintermsForTerm(term, variables);
       minterms.addAll(termMinterms);
+    }
+
+    return minterms.toList();
+  }
+
+  bool _isMintermNotation(String expression) {
+    // Check if expression contains minterm notation pattern (m followed by digits)
+    return RegExp(r'\bm\d+\b', caseSensitive: false).hasMatch(expression);
+  }
+
+  List<int> _parseMintermNotation(String expression, int numVariables) {
+    final minterms = <int>{};
+    final maxMinterm = pow(2, numVariables).toInt() - 1;
+
+    // Find all minterm numbers in the expression
+    final regex = RegExp(r'\bm(\d+)\b', caseSensitive: false);
+    final matches = regex.allMatches(expression);
+
+    for (final match in matches) {
+      final mintermStr = match.group(1);
+      if (mintermStr != null) {
+        final mintermNum = int.tryParse(mintermStr);
+        if (mintermNum != null && mintermNum >= 0 && mintermNum <= maxMinterm) {
+          minterms.add(mintermNum);
+        }
+      }
     }
 
     return minterms.toList();

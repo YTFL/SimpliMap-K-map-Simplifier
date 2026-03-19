@@ -22,6 +22,7 @@ class KMapProvider with ChangeNotifier {
   String get minimizedSOP => _minimizedSOP;
   String get minimizedPOS => _minimizedPOS;
   List<Implicant> get primeImplicants => _primeImplicants;
+  Minimizer get minimizer => _minimizer;
 
   void setExpression(String value) {
     _expression = value;
@@ -46,6 +47,9 @@ class KMapProvider with ChangeNotifier {
     if (index < _gridState.length) {
       _gridState[index] = value;
       _updateExpressionFromGrid();
+      _primeImplicants = [];
+      _minimizedSOP = '';
+      _minimizedPOS = '';
       notifyListeners();
     }
   }
@@ -126,7 +130,7 @@ class KMapProvider with ChangeNotifier {
     }).join(' ');
 
     // Invert literals (A -> A', B' -> B)
-    pos = pos.replaceAllMapped(RegExp(r"([A-D])('")?"), (m) {
+    pos = pos.replaceAllMapped(RegExp(r"([A-D])(')?"), (m) {
       return m.group(2) == "'" ? m.group(1)! : "${m.group(1)}'";
     });
     

@@ -1,6 +1,6 @@
 
+import 'dart:collection';
 import 'dart:math';
-import 'package:collection/collection.dart';
 import 'package:simplimap/models/implicant.dart';
 
 class Minimizer {
@@ -59,7 +59,6 @@ class Minimizer {
 
     while (true) {
         var nextImplicants = <String, Implicant>{}; // Use a map to handle duplicates
-        var combinedInPass = <Implicant>{};
 
         implicants.sort((a, b) => _countOnes(a.binaryRepresentation).compareTo(_countOnes(b.binaryRepresentation)));
 
@@ -117,13 +116,13 @@ class Minimizer {
     return essentialPIs.toList();
   }
 
-  String _implicantsToSOP(List<Implicant> implicants, int numVariables) {
+    String _implicantsToSOP(List<Implicant> implicants, int numVariables) {
       if (implicants.isEmpty) return "0";
       final variables = ['A', 'B', 'C', 'D'].sublist(0, numVariables);
-      return implicants.map((imp) => _implicantToTerm(imp, variables)).join(' + ');
+      return implicants.map((imp) => implicantToTerm(imp, variables)).join(' + ');
   }
 
-  String _implicantToTerm(Implicant implicant, List<String> variables) {
+    String implicantToTerm(Implicant implicant, List<String> variables) {
       String term = '';
       for (int i = 0; i < implicant.binaryRepresentation.length; i++) {
           if (implicant.binaryRepresentation[i] == '1') {

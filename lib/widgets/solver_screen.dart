@@ -10,7 +10,7 @@ class SolverScreen extends StatefulWidget {
   const SolverScreen({super.key});
 
   @override
-  _SolverScreenState createState() => _SolverScreenState();
+  State<SolverScreen> createState() => _SolverScreenState();
 }
 
 class _SolverScreenState extends State<SolverScreen> {

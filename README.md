@@ -1,6 +1,6 @@
-# myapp
+# SimpliMap
 
-A new Flutter project.
+SimpliMap is a Flutter app for simplifying Boolean expressions with Karnaugh maps.
 
 ## Getting Started
 

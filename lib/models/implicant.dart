@@ -1,5 +1,3 @@
-import 'package:simplimap/models/minterm.dart';
-
 class Implicant {
   final List<int> minterms;
   final String binaryRepresentation;

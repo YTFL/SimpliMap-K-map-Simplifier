@@ -63,7 +63,4 @@ flutter test
 By contributing you agree that your contributions will be licensed under the project's MIT License.
 
 ---
-YTFL — https://github.com/YTFL
-
----
 Thanks — YTFL.

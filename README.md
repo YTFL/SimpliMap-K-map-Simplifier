@@ -49,6 +49,17 @@ flutter build web
 
 Explore the `lib/` folder for UI widgets and models: `models/`, `widgets/`, `logic/`, and `screens/`.
 
+## Screenshots
+Below are screenshots from the app:
+
+![Solver screen](screenshots/solver.png)
+
+![K-map grid view](screenshots/kmap.png)
+
+![Implicants grouping](screenshots/implicants.png)
+
+![Explanation/summary view](screenshots/explanation.png)
+
 ## Development notes
 - Follow Flutter best practices: use `flutter analyze` and `flutter format` regularly.
 - To run the analyzer:

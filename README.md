@@ -86,7 +86,7 @@ Contributions are welcome. Suggested workflow:
 Please add a license file to clarify reuse terms if you plan to accept outside contributions.
 
 ## License
-This project will be licensed under the MIT License. The `LICENSE` file will be added using GitHub's MIT license template — the full license text is not included here.
+This project is licensed under the [MIT License](LICENSE).
 
 ## Contact
 For questions or collaboration, open an issue in this repository or add a PR with suggested changes.
